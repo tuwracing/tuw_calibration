@@ -34,15 +34,16 @@
 
 #include <geometry_msgs/Pose2D.h>
 #include <visualization_msgs/Marker.h>
+#include <cmath>
 
 using std::vector;
 using std::string;
 
 Laser2CornerNode::Laser2CornerNode() : nh_private_("~")
 {
-  tf_broadcaster_ = std::make_shared<tf::TransformBroadcaster>();
+  tf_broadcaster_ = std::make_shared< tf::TransformBroadcaster >();
   sub_segments_ = nh_.subscribe("line_segments", 1000, &Laser2CornerNode::callbackSegments, this);
-  pub_marker_ = nh_.advertise<visualization_msgs::Marker>("line_segments_marker", 10);
+  pub_marker_ = nh_.advertise< visualization_msgs::Marker >("line_segments_marker", 10);
 
   nh_private_.param("corner_point_tolerance", corner_point_tolerance_, 0.005);
   nh_private_.param("corner_point_x", corner_point_x_, 1.0);
@@ -64,7 +65,9 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
 
   for (int i = 0; i < linesegments_.size(); i++)
   {
-    linesegments_[i].set(_segments_msg.segments[i].p0.x, _segments_msg.segments[i].p0.y, _segments_msg.segments[i].p1.x,
+    linesegments_[i].set(_segments_msg.segments[i].p0.x,
+                         _segments_msg.segments[i].p0.y,
+                         _segments_msg.segments[i].p1.x,
                          _segments_msg.segments[i].p1.y);
   }
 
@@ -86,13 +89,15 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
   for (int i = 2; i < linesegments_.size(); i++)
   {
     tmp_dist = linesegments_[i].distanceTo(pc);
-    if (tmp_dist < closest_dist_1)
+    if (!std::isfinite(closest_dist_1) || tmp_dist < closest_dist_1)
     {
+      // std::cout << tmp_dist << " vs " << closest_dist_1 << std::endl;
       closest_dist_1 = tmp_dist;
       closest_idx_1 = i;
     }
-    else if (tmp_dist < closest_dist_2)
+    else if (!std::isfinite(closest_dist_2) || tmp_dist < closest_dist_2)
     {
+      // std::cout << tmp_dist << " vs " << closest_dist_2 << std::endl;
       closest_dist_2 = tmp_dist;
       closest_idx_2 = i;
     }
@@ -100,15 +105,29 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
 
   // find corner point (where linesegments meet)
   tuw::Point2D corner_point;
-  if (linesegments_[closest_idx_1].p0().equal(linesegments_[closest_idx_2].p0(), corner_point_tolerance_) ||
-      linesegments_[closest_idx_1].p0().equal(linesegments_[closest_idx_2].p1(), corner_point_tolerance_))
+  bool cornerFound = false;
+
+  tuw::Point2D p10 = linesegments_[closest_idx_1].p0();
+  tuw::Point2D p11 = linesegments_[closest_idx_1].p1();
+  tuw::Point2D p20 = linesegments_[closest_idx_2].p0();
+  tuw::Point2D p21 = linesegments_[closest_idx_2].p1();
+
+  std::cout << "p10 " << p10 << std::endl;
+  std::cout << "p11 " << p11 << std::endl;
+  std::cout << "p20 " << p20 << std::endl;
+  std::cout << "p21 " << p21 << std::endl;
+
+  if (p10.equal(p20, corner_point_tolerance_) || p10.equal(p21, corner_point_tolerance_))
   {
-    corner_point = linesegments_[closest_idx_1].p0();
+    std::cout << "cornercase 1" << std::endl;
+    cornerFound = true;
+    corner_point = p10;
   }
-  else if (linesegments_[closest_idx_1].p1().equal(linesegments_[closest_idx_2].p0(), corner_point_tolerance_) ||
-           linesegments_[closest_idx_1].p1().equal(linesegments_[closest_idx_2].p1(), corner_point_tolerance_))
+  else if (p11.equal(p20, corner_point_tolerance_) || p11.equal(p21, corner_point_tolerance_))
   {
-    corner_point = linesegments_[closest_idx_1].p1();
+    std::cout << "cornercase 2" << std::endl;
+    cornerFound = true;
+    corner_point = p11;
   }
 
   double corner_yaw;  // rotation around z axis
@@ -116,7 +135,7 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
   // use middle of line segments to check which is upfront and which on the side
   tuw::Point2D middle_1 = linesegments_[closest_idx_1].pc();
   tuw::Point2D middle_2 = linesegments_[closest_idx_2].pc();
-  
+
   // publish center of selected line segments as marker
   visualization_msgs::Marker centers;
   centers.header.frame_id = _segments_msg.header.frame_id;
@@ -136,7 +155,7 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
   p.x = middle_2.x();
   p.y = middle_2.y();
   centers.points.push_back(p);
-  
+
   pub_marker_.publish(centers);
 
   // use angle from line on the side
@@ -149,13 +168,29 @@ void Laser2CornerNode::callbackSegments(const tuw_geometry_msgs::LineSegments& _
     corner_yaw = linesegments_[closest_idx_1].angle();
   }
 
-  tf::Vector3 T = tf::Vector3(corner_point.x(), corner_point.y(), 0);
-  tf::Quaternion Q;
-  Q.setRPY(0, 0, corner_yaw);
+  tf::Transform laser_to_corner;
 
-  tf::Transform laser_to_corner(Q, T);
+  if (!cornerFound ||
+      !(std::isfinite(corner_point.x()) && std::isfinite(corner_point.y()) && std::isfinite(corner_yaw)))
+  {
+    // likely to happen if line segment detection fails temporarily
+    // TODO use avg or history of tf instead
+    laser_to_corner.setOrigin(lastTransform_.getOrigin());
+    laser_to_corner.setRotation(lastTransform_.getRotation());
+  }
+  else
+  {
+    tf::Vector3 T = tf::Vector3(corner_point.x(), corner_point.y(), 0);
+    tf::Quaternion Q;
+    Q.setRPY(0, 0, corner_yaw);
+
+    laser_to_corner.setOrigin(T);
+    laser_to_corner.setRotation(Q);
+  }
+
   tf_broadcaster_->sendTransform(
       tf::StampedTransform(laser_to_corner, ros::Time::now(), _segments_msg.header.frame_id, "corner"));
+  lastTransform_ = laser_to_corner;
 }
 
 int main(int argc, char** argv)

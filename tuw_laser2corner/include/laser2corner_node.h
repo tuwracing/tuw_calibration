@@ -35,8 +35,8 @@
 
 #include <ros/ros.h>
 
-#include <tf/transform_listener.h>
 #include <tf/transform_broadcaster.h>
+#include <tf/transform_listener.h>
 
 #include <sensor_msgs/LaserScan.h>
 
@@ -58,8 +58,8 @@ public:
 private:
   ros::NodeHandle nh_;
   ros::NodeHandle nh_private_;
-  std::shared_ptr<tf::TransformBroadcaster> tf_broadcaster_;
-  std::vector<tuw::LineSegment2D> linesegments_;
+  std::shared_ptr< tf::TransformBroadcaster > tf_broadcaster_;
+  std::vector< tuw::LineSegment2D > linesegments_;
 
   double corner_point_tolerance_;  /// max. difference between two points to form a corner
   double corner_point_x_;          /// heuristic ref. point to find line segments forming a corner
@@ -67,6 +67,8 @@ private:
 
   ros::Subscriber sub_segments_;
   ros::Publisher pub_marker_;
+
+  tf::Transform lastTransform_;
 
   /**
     * @brief Callback for received LineSegments msgs

@@ -30,13 +30,13 @@
  *   POSSIBILITY OF SUCH DAMAGE.                                           *
  ***************************************************************************/
 
-#include "calib_base2cam_node.h"
 #include <math.h>
+#include "calib_base2cam_node.h"
 
 Base2CamNode::Base2CamNode() : nh_private_("~")
 {
-  tf_listener_ = std::make_shared<tf::TransformListener>();
-  tf_broadcaster_ = std::make_shared<tf::TransformBroadcaster>();
+  tf_listener_ = std::make_shared< tf::TransformListener >();
+  tf_broadcaster_ = std::make_shared< tf::TransformBroadcaster >();
   nh_private_.param("camera_link", camera_link_, std::string("/camera_link"));
   nh_private_.param("base_link", base_link_, std::string("/base_link"));
   nh_private_.param("checkerboard_frame", checkerboard_frame_, std::string("/checkerboard"));
@@ -47,6 +47,21 @@ Base2CamNode::Base2CamNode() : nh_private_("~")
   checker_z_ = checker_height_ - laser_height_;
   nh_private_.param("rotate_camera_image_180", rotate_180_, false);
   nh_private_.param("publish_all_tf", publish_all_tf_, true);
+  calibHistory_.clear();
+}
+
+static void avgOf(std::deque< tf::Transform > tfs, tf::Transform& averaged)
+{
+  double x = 0.0, y = 0.0, z = 0.0;
+  for (tf::Transform& tf : tfs)
+  {
+    x += tf.getOrigin().getX();
+    y += tf.getOrigin().getY();
+    z += tf.getOrigin().getZ();
+  }
+  tf::Vector3 origin(x / tfs.size(), y / tfs.size(), z / tfs.size());
+  averaged.setOrigin(origin);
+  averaged.setRotation(tfs.front().getRotation());
 }
 
 void Base2CamNode::getBase2CamTf()
@@ -55,18 +70,25 @@ void Base2CamNode::getBase2CamTf()
   tf::Transform corner2checker;
   corner2checker.setOrigin(tf::Vector3(0, checker_y_, checker_z_));
   tf::Quaternion q;
-  q.setRPY(0, M_PI / 2, M_PI);
+
+  // align to checkerboard coordinates
+  q.setRPY(0, -M_PI / 2, M_PI);
+
   corner2checker.setRotation(q);
 
   if (publish_all_tf_)
-    tf_broadcaster_->sendTransform(tf::StampedTransform(corner2checker, ros::Time::now(), corner_frame_,
-                                                        "checkerboardVI"
-                                                        "S"));
+    // clang-format off
+    tf_broadcaster_->sendTransform(tf::StampedTransform(
+      corner2checker,
+      ros::Time::now(),
+      corner_frame_,
+      "checkerboardVIS"));
+  // clang-format on
 
-  tf::StampedTransform camlink2checker;
+  tf::StampedTransform checker2camlink;
   try
   {
-    tf_listener_->lookupTransform(checkerboard_frame_, camera_link_, ros::Time(0), camlink2checker);
+    tf_listener_->lookupTransform(checkerboard_frame_, camera_link_, ros::Time(0), checker2camlink);
   }
   catch (tf::TransformException ex)
   {
@@ -75,15 +97,19 @@ void Base2CamNode::getBase2CamTf()
   }
 
   if (publish_all_tf_)
-    tf_broadcaster_->sendTransform(tf::StampedTransform(camlink2checker, ros::Time::now(), "checkerboardVIS",
-                                                        "camlinkVI"
-                                                        "S"));
+    // clang-format off
+    tf_broadcaster_->sendTransform(tf::StampedTransform(
+      checker2camlink,
+      ros::Time::now(),
+      "checkerboardVIS",
+      "camlinkVIS"));
+  // clang-format on
 
-  tf::StampedTransform corner2base;
+  tf::StampedTransform base2corner;
 
   try
   {
-    tf_listener_->lookupTransform(base_link_, corner_frame_, ros::Time(0), corner2base);
+    tf_listener_->lookupTransform(base_link_, corner_frame_, ros::Time(0), base2corner);
   }
   catch (tf::TransformException ex)
   {
@@ -92,9 +118,24 @@ void Base2CamNode::getBase2CamTf()
   }
 
   if (publish_all_tf_)
-    tf_broadcaster_->sendTransform(tf::StampedTransform(corner2base, ros::Time::now(), base_link_, "cornerVIS"));
+    tf_broadcaster_->sendTransform(tf::StampedTransform(base2corner, ros::Time::now(), base_link_, "cornerVIS"));
 
-  tf::Transform base2cam = corner2base * corner2checker * camlink2checker;
+  tf::Transform checker2cam;
+  tf::Quaternion qRealCamera;
+
+  // rotate resulting frame towards REAL camera frame (actual zed mounting frame) if cb is aligned with camera frame
+  qRealCamera.setRPY(-M_PI / 2, -M_PI / 2, 0);
+  checker2cam.setOrigin(checker2camlink.getOrigin());
+  checker2cam.setRotation(checker2camlink.getRotation() * qRealCamera);
+
+  // transform from the camera position in world coordinates to the view frame coordinates
+  tf::Transform cam2frame;
+  cam2frame.setOrigin(tf::Vector3(0, 0, 0));
+  tf::Quaternion qFrame;
+  qFrame.setRPY(M_PI / 2, M_PI, M_PI / 2);
+  cam2frame.setRotation(qFrame);
+
+  tf::Transform base2cam = base2corner * corner2checker * checker2cam;
 
   tf::Vector3 origin = base2cam.getOrigin();
   tf::Quaternion rotation = base2cam.getRotation();
@@ -108,13 +149,19 @@ void Base2CamNode::getBase2CamTf()
   }
 
   if (publish_all_tf_)
+  {
     tf_broadcaster_->sendTransform(tf::StampedTransform(base2cam, ros::Time::now(), base_link_, "camVIS"));
+  }
 
-  // print as static transform publisher
-  // TODO output only once, maybe using an average or most probable tf since checkerboard detection and line detection
-  // are no always stable
-  ROS_INFO("%f %f %f %f %f %f %f %s %s", origin.getX(), origin.getY(), origin.getZ(), rotation.x(), rotation.y(),
-           rotation.z(), rotation.w(), base_link_.c_str(), camera_link_.c_str());
+  // average a history of calibration values
+  if (calibHistory_.size() >= 100)
+  {
+    calibHistory_.pop_front();
+  }
+  calibHistory_.push_back(base2cam);
+  tf::Transform avgCalib;
+  avgOf(calibHistory_, avgCalib);
+  tf_broadcaster_->sendTransform(tf::StampedTransform(avgCalib, ros::Time::now(), base_link_, "edge/zed/left_cam"));
 }
 
 int main(int argc, char** argv)

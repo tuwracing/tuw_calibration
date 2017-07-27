@@ -35,8 +35,9 @@
 
 #include <ros/ros.h>
 
-#include <tf/transform_listener.h>
 #include <tf/transform_broadcaster.h>
+#include <tf/transform_listener.h>
+#include <deque>
 
 /**
  * @brief Create base_link to camera_link tf from intermediate tf's
@@ -56,19 +57,20 @@ public:
 
 private:
   ros::NodeHandle nh_private_;
-  std::shared_ptr<tf::TransformListener> tf_listener_;
-  std::shared_ptr<tf::TransformBroadcaster> tf_broadcaster_;
+  std::shared_ptr< tf::TransformListener > tf_listener_;
+  std::shared_ptr< tf::TransformBroadcaster > tf_broadcaster_;
   std::string camera_link_;         /// camera_link frame id
   std::string base_link_;           /// base_link frame id
   std::string checkerboard_frame_;  /// checkerboard frame id
   std::string corner_frame_;        /// corner frame id
+  std::deque< tf::Transform > calibHistory_;
 
   double laser_height_;    /// height of the laser scanner from the ground
   double checker_height_;  /// height of the checkerboard origin from the ground
   double checker_y_;       /// distance from the corner to the checkerboard origin
   double checker_z_;       /// checker_height_ - laser_height_
-  
-  bool rotate_180_;        /// whether to rotate the camera tf by 180°
+
+  bool rotate_180_;  /// whether to rotate the camera tf by 180°
   bool publish_all_tf_;
 };
 
